@@ -651,6 +651,21 @@ def test_redact_sensitive_string_substring_secrets_both_real():
 	_assert_well_formed_placeholders(result)
 
 
+def test_redact_sensitive_string_secret_value_contains_other_key():
+	"""A secret value that embeds another secret's *key* text must not corrupt the placeholder.
+
+	Cubic review case: value "secret" with key "SupersecretKey" — the earlier
+	sentinel embedded the key, so the longer key's sentinel text was re-matched
+	by the shorter secret's replace and the restore pass corrupted the markup.
+	The opaque sentinel (nonce + index only) avoids the collision.
+	"""
+	sensitive = {'SupersecretKey': 'secret', 'db_pass': 'hunter2'}
+	value = 'key=secret pass=hunter2'
+	result = redact_sensitive_string(value, sensitive)
+	assert result == 'key=<secret>SupersecretKey</secret> pass=<secret>db_pass</secret>'
+	_assert_well_formed_placeholders(result)
+
+
 def test_redact_sensitive_string_longest_first_still_holds():
 	"""Longest-match-first behavior is preserved: the shorter substring is not masked inside the longer secret."""
 	sensitive = {'full': 'supersecret', 'part': 'secret'}

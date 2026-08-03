@@ -91,7 +91,11 @@ def redact_sensitive_string(value: str, sensitive_values: dict[str, str]) -> str
 	for i, (key, secret) in enumerate(sorted(sensitive_values.items(), key=lambda item: len(item[1]), reverse=True)):
 		if not secret:
 			continue
-		sentinel = f'\x00<redacted-{nonce}-{i}>{key}</redacted-{nonce}-{i}>\x00'
+		# Opaque sentinel: nonce + index only, never the key text. A sentinel
+		# that embedded the key could itself be re-matched if one secret's value
+		# contained another secret's key (e.g. value "secret" with key "SupersecretKey"),
+		# corrupting the placeholder on the restore pass.
+		sentinel = f'\x00<redacted-{nonce}-{i}>\x00'
 		value = value.replace(secret, sentinel)
 		sentinels[sentinel] = f'<secret>{key}</secret>'
 
