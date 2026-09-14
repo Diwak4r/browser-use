@@ -2244,11 +2244,17 @@ class BrowserSession(BaseModel):
 		# 8. Attach the WS drop detection callback to the new client
 		self._attach_ws_drop_callback()
 
-	async def _auto_reconnect(self, max_attempts: int = 3) -> None:
+	async def _auto_reconnect(self, max_attempts: int = 3, _drop_retrigger_budget: int = 1) -> None:
 		"""Attempt to reconnect with exponential backoff.
 
 		Dispatches BrowserReconnectingEvent before each attempt and
 		BrowserReconnectedEvent on success.
+
+		_drop_retrigger_budget bounds how many times a drop landing inside the
+		reconnect window may schedule an additional full pass. The default of 1
+		keeps the common-case behaviour (one extra round); a proxy that keeps
+		dropping the socket immediately after connect therefore fails out after
+		a bounded number of rounds instead of retriggering indefinitely.
 		"""
 		async with self._reconnect_lock:
 			if self._reconnecting:
@@ -2305,11 +2311,19 @@ class BrowserSession(BaseModel):
 			self._reconnect_event.set()  # wake up all waiters regardless of outcome
 
 			if reconnect_pending and not self._intentional_stop and self.cdp_url:
-				try:
-					loop = asyncio.get_running_loop()
-					self._reconnect_task = loop.create_task(self._auto_reconnect())
-				except RuntimeError:
-					self.logger.error('🔌 No event loop available for pending auto-reconnect')
+				if _drop_retrigger_budget <= 0:
+					self.logger.error(
+						'🔌 WebSocket dropped again during reconnect and the reconnect-window retrigger budget is exhausted; '
+						'not scheduling another round (connection likely flapping).'
+					)
+				else:
+					try:
+						loop = asyncio.get_running_loop()
+						self._reconnect_task = loop.create_task(
+							self._auto_reconnect(max_attempts, _drop_retrigger_budget - 1)
+						)
+					except RuntimeError:
+						self.logger.error('🔌 No event loop available for pending auto-reconnect')
 
 	def _attach_ws_drop_callback(self) -> None:
 		"""Attach a done callback to the CDPClient's message handler task to detect WS drops."""

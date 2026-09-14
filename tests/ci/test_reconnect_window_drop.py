@@ -94,3 +94,38 @@ async def test_auto_reconnect_loops_after_drop_in_window(monkeypatch):
 	assert call_count == 2
 	assert s._reconnecting is False
 	assert s._reconnect_pending is False
+
+
+async def test_auto_reconnect_retrigger_budget_bounds_flapping_proxy(monkeypatch):
+	"""A drop in the reconnect window cannot retrigger passes indefinitely."""
+	s = _make_session()
+	call_count = 0
+
+	async def fake_reconnect(self: BrowserSession) -> None:
+		nonlocal call_count
+		call_count += 1
+		loop = asyncio.get_running_loop()
+		fut = loop.create_future()
+		task = asyncio.ensure_future(fut)
+		self._cdp_client_root = FakeClient(task)  # type: ignore[assignment]
+		# Every pass: the new socket dies inside the reconnect window, which
+		# would previously reschedule another full pass with no ceiling.
+		self._attach_ws_drop_callback()
+		fut.set_exception(ConnectionResetError('ws dropped again'))
+		await asyncio.sleep(0.05)
+
+	monkeypatch.setattr(BrowserSession, 'reconnect', fake_reconnect)
+
+	# Default budget (1): one extra round, then no further passes.
+	await s._auto_reconnect(max_attempts=1)
+	retry = s._reconnect_task
+	assert retry is not None, 'expected one budgeted re-scheduled pass'
+	await retry
+	assert call_count == 2, 'budget must allow exactly one extra round'
+	assert s._reconnect_task.done()
+	assert s._reconnecting is False
+	assert s._reconnect_pending is False
+
+	# The exhausted pass must not have scheduled another one behind it.
+	await asyncio.sleep(0.15)
+	assert call_count == 2
